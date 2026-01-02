@@ -4,6 +4,7 @@ const fs = require('fs');
 const { exec } = require('child_process');
 const axios = require('axios');
 const clipboardEvent = require('clipboard-event');
+const { getVersionFromGitHub, downloadFileFromGitHub } = require('./utils/github-downloader');
 const contentTypeMap = {
     '.mp3': 'audio/mpeg',
     '.webm': 'audio/webm',
@@ -367,101 +368,21 @@ if (!fs.existsSync(CODE_CACHE_DIR)) {
 }
 
 /**
- * Lấy version từ package.json trên GitLab
+ * Lấy version từ package.json trên GitHub
  * @returns {Promise<string|null>} Version string hoặc null nếu lỗi
  */
 async function getVersionFromGitLab() {
-    if (!appConfig.GITLAB_REPO_URL || !appConfig.REMOTE_CODE_ENABLED) {
-        return null;
-    }
-
-    try {
-        let packageJsonUrl;
-        if (appConfig.GITLAB_TOKEN) {
-            const projectId = appConfig.GITLAB_PROJECT_ID || '';
-            const branch = appConfig.GITLAB_BRANCH || 'main';
-            packageJsonUrl = `${appConfig.GITLAB_REPO_URL}/api/v4/projects/${projectId}/repository/files/package.json/raw?ref=${branch}`;
-        } else {
-            const branch = appConfig.GITLAB_BRANCH || 'main';
-            packageJsonUrl = `${appConfig.GITLAB_REPO_URL}/-/raw/${branch}/package.json`;
-        }
-
-        const headers = {};
-        if (appConfig.GITLAB_TOKEN) {
-            headers['PRIVATE-TOKEN'] = appConfig.GITLAB_TOKEN;
-        }
-
-        const response = await axios({
-            method: 'GET',
-            url: packageJsonUrl,
-            timeout: 10000,
-            headers: {
-                ...headers,
-                'Cache-Control': 'no-cache'
-            }
-        });
-
-        if (response.status === 200 && response.data) {
-            const packageJson = typeof response.data === 'string' 
-                ? JSON.parse(response.data) 
-                : response.data;
-            return packageJson.version || null;
-        }
-    } catch (error) {
-        console.error('getVersionFromGitLab error:', error.message);
-    }
-    
-    return null;
+    return await getVersionFromGitHub(appConfig);
 }
 
 /**
- * Download file từ GitLab
+ * Download file từ GitHub
  * @param {string} filePath - Đường dẫn file trong repo
  * @param {string} outputPath - Đường dẫn lưu file local
  * @returns {Promise<boolean>} True nếu download thành công
  */
 async function downloadFileFromGitLab(filePath, outputPath) {
-    if (!appConfig.GITLAB_REPO_URL || !appConfig.REMOTE_CODE_ENABLED) {
-        return false;
-    }
-
-    try {
-        let fileUrl;
-        if (appConfig.GITLAB_TOKEN) {
-            const projectId = appConfig.GITLAB_PROJECT_ID || '';
-            const branch = appConfig.GITLAB_BRANCH || 'main';
-            const encodedPath = encodeURIComponent(filePath);
-            fileUrl = `${appConfig.GITLAB_REPO_URL}/api/v4/projects/${projectId}/repository/files/${encodedPath}/raw?ref=${branch}`;
-        } else {
-            const branch = appConfig.GITLAB_BRANCH || 'main';
-            fileUrl = `${appConfig.GITLAB_REPO_URL}/-/raw/${branch}/${filePath}`;
-        }
-
-        const headers = {};
-        if (appConfig.GITLAB_TOKEN) {
-            headers['PRIVATE-TOKEN'] = appConfig.GITLAB_TOKEN;
-        }
-
-        const response = await axios({
-            method: 'GET',
-            url: fileUrl,
-            responseType: 'text',
-            timeout: 30000,
-            headers: {
-                ...headers,
-                'Cache-Control': 'no-cache'
-            }
-        });
-
-        if (response.status === 200 && response.data) {
-            fs.writeFileSync(outputPath, response.data, 'utf8');
-            return true;
-        }
-    } catch (error) {
-        console.error('downloadFileFromGitLab error:', error.message);
-    }
-    
-    return false;
+    return await downloadFileFromGitHub(filePath, outputPath, appConfig);
 }
 
 /**
@@ -474,7 +395,7 @@ async function loadRendererJs() {
     const versionFile = path.join(CODE_CACHE_DIR, 'app.version');
 
     // Nếu không có GitLab config, dùng local file
-    if (!appConfig.GITLAB_REPO_URL || !appConfig.REMOTE_CODE_ENABLED) {
+    if (!appConfig.REMOTE_CODE_ENABLED) {
         if (fs.existsSync(localRendererJs)) {
             return localRendererJs;
         }
@@ -505,7 +426,7 @@ async function loadRendererJs() {
         // Nếu version khác hoặc chưa có cache, download
         if (remoteVersion !== localVersion) {
             console.log(`Downloading renderer.js from GitLab (version: ${remoteVersion})...`);
-            const downloadSuccess = await downloadFileFromGitLab('src/renderer.js', cacheRendererJs);
+            const downloadSuccess = await downloadFileFromGitLab('renderer.js', cacheRendererJs);
             
             if (downloadSuccess) {
                 fs.writeFileSync(versionFile, remoteVersion, 'utf8');
@@ -792,7 +713,7 @@ async function checkAndUpdateRendererJs() {
         if (remoteVersion !== localVersion) {
             console.log(`[UPDATE] New renderer.js version detected: ${remoteVersion} (current: ${localVersion || 'none'})`);
             
-            const downloadSuccess = await downloadFileFromGitLab('src/renderer.js', cacheRendererJs);
+            const downloadSuccess = await downloadFileFromGitLab('renderer.js', cacheRendererJs);
             
             if (downloadSuccess) {
                 // Lưu version
@@ -859,8 +780,8 @@ async function checkAndUpdateMainJs() {
             console.log('Downloading main.js and renderer.js from GitLab...');
             
             // Download cả main.js và renderer.js từ GitLab
-            const mainJsSuccess = await downloadFileFromGitLab('src/main.js', cacheMainJs);
-            const rendererJsSuccess = await downloadFileFromGitLab('src/renderer.js', cacheRendererJs);
+            const mainJsSuccess = await downloadFileFromGitLab('main.js', cacheMainJs);
+            const rendererJsSuccess = await downloadFileFromGitLab('renderer.js', cacheRendererJs);
             
             if (mainJsSuccess && rendererJsSuccess) {
                 // Lưu version
@@ -1372,7 +1293,7 @@ app.whenReady().then(() => {
     }, 5000);
     createWindow();
     startMonitoring();
-    startClipboardMonitoring();
+    // startClipboardMonitoring();
     // Bắt đầu auto-check version sau 10 giây (để app khởi động xong)
     setTimeout(() => {
         startVersionCheck();
